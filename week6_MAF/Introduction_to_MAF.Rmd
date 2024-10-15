@@ -1,0 +1,185 @@
+---
+title: "Introduction to MAF"
+author: Mahija Mogalipuvvu, adapted from Nicole Black, Wade Boohar
+date: 07/17/22
+updated: 10/3/24
+
+author: Kate Olsen
+---
+
+***Deliverables***
+- upload this R Notebook to your GitHub and submit the link to your Repo on Brightspace
+- include ALL graphs or figures created in this assignment in a folder with your R notebook with descriptive file names.
+
+We encourage you to work with a partner. Therefore, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In this assignment, you will need to use your skills learned in class to demonstrate your understanding of categorical variables and R data structures.
+
+*Pre-Assignment*
+Load all necessary packages, read in the clinical data.csv file you have in your analysis_data folder, and instantiate the MAF_object.
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath("/home1/kyolsen/490_cluster/analysis_data")) 
+```
+
+```{r}
+library(maftools)
+library(TCGAbiolinks)
+library(ggplot2)
+```
+
+```{r}
+clinical <- read.csv("/home1/kyolsen/490_cluster/analysis_data/brca_clinical_data.csv")
+```
+
+```{r}
+maf_query <- GDCquery(
+  project = 'TCGA-BRCA',
+  data.category = "Simple Nucleotide Variation",
+  access = "open", # we only have access to somatic mutations which are open access
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+#GDCdownload(maf_query)
+
+maf <- GDCprepare(maf_query) # as long as it runs, ignore any errors
+
+maf_object <- read.maf(maf = maf,
+                       clinicalData = clinical, 
+                       isTCGA = TRUE)
+```
+
+*1*
+Choose a clinical variable (or any variable from clin_rad or clin_drug) to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
+```{r}
+numeric_years <- as.numeric(as.character(maf_object@clinical.data$initial_pathologic_dx_year))
+median_yr <- median(numeric_years, na.rm = TRUE)
+print(median_yr)
+
+# Create new column: 'dx_year_group'
+maf_object@clinical.data$dx_year_group <- ifelse(as.numeric(maf_object@clinical.data$initial_pathologic_dx_year) > median_yr,'Late Dx Year', 'Early Dx Year')
+```
+
+
+*2*
+Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the two groups. Pick one that has a large discrepancy in % mutated or type of mutations between the groups and research it. 
+Research it. What is the gene used for? Can you think of any reason for the discrepancy?
+
+All of the genes have a pretty similar % in terms of type of mutation; however, PIK3CA, shows a greater proportion
+of missense mutations in earlier diagnostic years than in the later ones. PIK3CA encodes the PI3K enzyme, which plays a
+role in the cell signaling pathways that regulate cell growth, proliferation, survival, and metabolism. When mutated, especially in cancers, PIK3CA can lead to overactivation of these pathways, promoting uncontrolled cell growth. One reason
+why fewer missense mutations are shown in the later diagnositc group could be improvements in diagnostic technology that
+is more capable of detecting other mutation types.
+
+```{r}
+early_dx_yr_mask <- ifelse(maf_object@clinical.data$dx_year_group == 'Early Dx Year', T, F)
+early_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[early_dx_yr_mask]
+early_dx_yr_maf <- subsetMaf(maf = maf_object,
+                       tsb = early_patient_barcodes)
+later_dx_yr_mask <-ifelse(maf_object@clinical.data$dx_year_group == 'Late Dx Year', T, F)
+later_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[later_dx_yr_mask]
+later_dx_yr_maf <- subsetMaf(maf = maf_object,
+                       tsb = later_patient_barcodes)
+
+m1.genes = getGeneSummary(early_dx_yr_maf)[1:10]
+m2.genes = getGeneSummary(later_dx_yr_maf)[1:10]
+mdt = merge(m1.genes[,.(Hugo_Symbol, MutatedSamples)], m2.genes[,.(Hugo_Symbol, MutatedSamples)], by = 'Hugo_Symbol', all = TRUE)
+mdt$MutatedSamples.x[is.na(mdt$MutatedSamples.x)] = 0
+mdt$MutatedSamples.y[is.na(mdt$MutatedSamples.y)] = 0
+mdt$max = apply(mdt[,.(MutatedSamples.x, MutatedSamples.y)], 1, max)
+mdt = mdt[order(max, decreasing = TRUE)]
+
+top_genes = mdt$Hugo_Symbol[1:20]
+
+coOncoplot(m1 = early_dx_yr_maf, 
+           m2 = later_dx_yr_maf,
+           m1Name = "Early Dx Year", 
+           m2Name = "Later Dx Year", 
+           genes = top_genes,
+           borderCol = NA)
+
+```
+
+
+
+*3*
+Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
+Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
+
+The p value of 0.37 > 0.05 so there is no statistically significant association between PIK3CA mutations and the early
+vs late diagnosis year groups. The odds ratio is the odd of having one mutation in a group relative to the other. The
+odds ratio of 0.88 suggests that the odds of having a PIK3CA mutation are slightly lower in the early diagnosis year (less recent diagnosis) group, but this is not statistically significant given the p-value.
+```{r}
+maf_object@clinical.data$dx_year_group <-factor(maf_object@clinical.data$dx_year_group)
+
+
+pik3ca_mutations <- maf_object@data[maf_object@data$Hugo_Symbol == "PIK3CA", ]
+
+mutated_samples <- unique(pik3ca_mutations$Tumor_Sample_Barcode)
+
+maf_object@clinical.data$PIK3CA_mutation <- ifelse(maf_object@clinical.data$Tumor_Sample_Barcode %in% mutated_samples, 
+                                                     "Mutated", "Wild-type")
+
+maf_object@clinical.data$PIK3CA_mutation <- factor(maf_object@clinical.data$PIK3CA_mutation)
+
+
+
+contig <- table(maf_object@clinical.data$dx_year_group, maf_object@clinical.data$PIK3CA_mutation)
+print(contig)
+
+mosaicplot(contig)
+
+fisher_test <- fisher.test(contig)
+fisher_test$p.value
+print(fisher_test)
+```
+
+
+*4*
+Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
+Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
+
+The majority of these PIK3CA mutations are missense mutations except for one in frame deletion on the early dx year side.
+The mutation rate at PIK3a_I seems marginally higher for late dx year, but also I would not expect a large change in the two
+populations since they differ only in the year they were diagnosed as opposed to something like stage.
+```{r}
+early_dx_maf <- subsetMaf(maf = maf_object, 
+                           tsb = maf_object@clinical.data$Tumor_Sample_Barcode[maf_object@clinical.data$dx_year_group == 'Early Dx Year'])
+
+late_dx_maf <- subsetMaf(maf = maf_object, 
+                          tsb = maf_object@clinical.data$Tumor_Sample_Barcode[maf_object@clinical.data$dx_year_group == 'Late Dx Year'])
+
+lollipopPlot2(m1 = early_dx_maf, 
+              m2 = late_dx_maf, 
+              m1_name = "Early Dx Year",
+              m2_name = "Late Dx Year",
+              gene = "PIK3CA")
+
+
+```
+
+
+*5*
+Create your Overall_Survival_Status column and create a mafSurvival KM plot based on mutations in your chosen gene.
+Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
+
+There doesn't seem to be a significant difference, and PIK3CA mutations do not seem to strongly impact the survival
+curve in this dataset. One hypothesis for this could be that the PIK3CA mutations in this dataset are less oncogenic
+so any mutations in PIK3CA that we are seeing wouldn't strongly affect survival.
+```{r}
+# Create survival_time and overall_survival_status columns
+maf_object@clinical.data$survival_time <- ifelse(maf_object@clinical.data$vital_status == "Dead", 
+                                                 maf_object@clinical.data$death_days_to, 
+                                                 maf_object@clinical.data$last_contact_days_to)
+
+maf_object@clinical.data$Overall_Survival_Status <- ifelse(maf_object@clinical.data$vital_status == "Dead", 1, 0)
+
+mafSurvival(maf = maf_object,
+            genes = "PIK3CA",
+            time = "survival_time",
+            Status = "Overall_Survival_Status",
+            isTCGA = TRUE)
+
+```
