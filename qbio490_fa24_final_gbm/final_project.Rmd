@@ -1,0 +1,311 @@
+---
+title: "final_project"
+author: "Kate Olsen, Aditi Shankar, and Tushar Zhade"
+date: "2024-11-20"
+output: html_document
+---
+
+#Setting working directory
+```{r setup}
+dir.create("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs")
+knitr::opts_knit$set(root.dir = "/home1/kyolsen/490_cluster/analysis_data")
+```
+
+#Download and load packages
+```{r}
+if (!require("BiocManager")) install.packages("BiocManager")
+if (!require("maftools")) BiocManager::install("maftools")
+if (!require("TCGAbiolinks")) BiocManager::install("TCGAbiolinks")
+if (!require("survival")) install.packages("survival")
+if (!require("survminer")) install.packages("survminer")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("DESeq2", quietly = TRUE)) BiocManager::install("DESeq2")
+if (!require("EnhancedVolcano", quietly = TRUE)) BiocManager::install("EnhancedVolcano")
+if (!require("sesameData", quietly = TRUE)) BiocManager::install("sesameData")
+if (!require("sesame", quietly = TRUE)) BiocManager::install("sesame")
+if (!require("limma", quietly = TRUE)) BiocManager::install("limma")
+
+library(BiocManager) 
+library(maftools)
+library(TCGAbiolinks)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(DESeq2)
+library(EnhancedVolcano)
+library(sesameData)
+library(sesame)
+library(limma)
+```
+
+```{r}
+clin_query <- GDCquery(project = "TCGA-GBM", data.category = "Clinical",
+data.type = "Clinical Supplement", data.format = 'BCR Biotab')
+GDCdownload(clin_query)
+clinical.BCRtab.all <- GDCprepare(clin_query)
+clinic <- clinical.BCRtab.all$clinical_patient_gbm[-c(1,2),]
+
+
+colnames(clinic)[ colnames(clinic) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+```
+
+```{r}
+clinical <- clinic
+maf_query <- GDCquery(
+  project = 'TCGA-GBM',
+  data.category = "Simple Nucleotide Variation",
+  access = "open", # we only have access to somatic mutations which are open access
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+GDCdownload(maf_query)
+
+maf <- GDCprepare(maf_query) # as long as it runs, ignore any errors
+
+maf_object <- read.maf(maf = maf,
+                       clinicalData = clinical, 
+                       isTCGA = TRUE)
+```
+
+```{r}
+# Create survival_time and overall_survival_status columns
+maf_object@clinical.data$survival_time <- ifelse(maf_object@clinical.data$vital_status == "Dead", 
+                                                 maf_object@clinical.data$death_days_to, 
+                                                 maf_object@clinical.data$last_contact_days_to)
+
+maf_object@clinical.data$Overall_Survival_Status <- ifelse(maf_object@clinical.data$vital_status == "Dead", 1, 0)
+
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/KMPlot_NF1.jpg")
+mafSurvival(maf = maf_object,
+            genes = "NF1",
+            time = "survival_time",
+            Status = "Overall_Survival_Status",
+            isTCGA = TRUE)
+dev.off()
+
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/KMPlot_PTEN.jpg")
+mafSurvival(maf = maf_object,
+            genes = "PTEN",
+            time = "survival_time",
+            Status = "Overall_Survival_Status",
+            isTCGA = TRUE)
+dev.off()
+
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/KMPlot_TP53.jpg")
+mafSurvival(maf = maf_object,
+            genes = "TP53",
+            time = "survival_time",
+            Status = "Overall_Survival_Status",
+            isTCGA = TRUE)
+dev.off()
+
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/KMPlot_EGFR.jpg")
+mafSurvival(maf = maf_object,
+            genes = "EGFR",
+            time = "survival_time",
+            Status = "Overall_Survival_Status",
+            isTCGA = TRUE)
+dev.off()
+```
+```{r}
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/lollipop.jpg")
+lollipopPlot(
+  maf = maf_object,
+  gene = "TP53",
+  AACol = "HGVSp_Short", # Amino acid changes
+  labelPos = "all", # Show all mutation positions
+  showMutationRate = TRUE
+)
+dev.off()
+```
+
+```{r}
+# Get the top mutated genes across all patients
+gene_summary <- getGeneSummary(maf_object)
+top_genes <- gene_summary$Hugo_Symbol[1:20]  # Top 20 most mutated genes
+
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/oncoplot.jpg")
+# Generate the oncoplot
+oncoplot(maf = maf_object, 
+         genes = top_genes, 
+         removeNonMutated = TRUE, # Optionally remove samples without mutations in top genes
+         showTumorSampleBarcodes = FALSE)  # Hide sample barcodes for cleaner visualization
+dev.off()
+
+```
+```{r}
+rna_query <- GDCquery(project ="TCGA-SKCM",
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification",
+                      workflow.type = "STAR - Counts")
+#GDCdownload(rna_query)
+rna_se <- GDCprepare(rna_query)
+
+rna_clinical <- as.data.frame(rna_se@colData)
+columns_to_remove <- c("treatments", "primary_site", "disease_type")
+rna_clinical <- rna_clinical[, !(colnames(rna_clinical) %in% columns_to_remove)]
+write.csv(rna_clinical,"/home1/kyolsen/490_cluster/analysis_data/skcm_rna_clinical_data.csv")
+
+rna_genes<-as.data.frame(rna_se@rowRanges@elementMetadata)
+write.csv(rna_genes,"/home1/kyolsen/490_cluster/analysis_data/skcm_rna_gene_data.csv")
+
+rna_counts<-as.data.frame(rna_se@assays@data$unstranded)
+colnames(rna_counts)<-rna_clinical$patient
+rownames(rna_counts)<-rna_genes$gene_id
+write.csv(rna_counts,"/home1/kyolsen/490_cluster/analysis_data/gbm_rna_count_data.csv")
+```
+
+```{r}
+# Subset MAF for TP53 mutations
+tp53_mut_maf <- subsetMaf(maf = maf_object, genes = "TP53")
+
+# Extract the barcodes of patients with TP53 mutations
+tp53_mutated_barcodes <- unique(tp53_mut_maf@clinical.data$Tumor_Sample_Barcode)
+
+# Check the number of patients with TP53 mutations
+length(tp53_mutated_barcodes)
+
+rna_clinical <- read.csv("~/490_cluster/analysis_data/gbm_rna_clinical_data.csv")
+rna_genes <- read.csv("~/490_cluster/analysis_data/gbm_rna_gene_data.csv")
+rna_counts <- read.csv("~/490_cluster/analysis_data/gbm_rna_count_data.csv", row.names = 1)
+
+
+#variable of interest
+rna_clinical$TP53_mutation <- ifelse(rna_clinical$patient %in% tp53_mutated_barcodes, "Mutated", "WildType")
+rna_clinical$TP53_mutation <- factor(rna_clinical$TP53_mutation)
+
+#covariates
+rna_clinical$gender <- factor(rna_clinical$gender)
+
+#removing NA vals
+null_mask <- !is.na(rna_clinical$gender)
+rna_clinical <- rna_clinical[null_mask,]
+rna_counts <- rna_counts[, null_mask]
+
+#prefiltering genes
+keep_genes <- rowSums(rna_counts) >= 20
+filtered_rna_counts <- rna_counts[keep_genes,]
+filtered_rna_genes <- rna_genes[keep_genes,]
+```
+
+```{r}
+# Create DESeq2 dataset, controlling only for gender
+dds <- DESeqDataSetFromMatrix(countData = filtered_rna_counts,
+                              colData = rna_clinical,
+                              design = ~ gender + TP53_mutation)
+
+dds_obj <- DESeq(dds)
+
+resultsNames(dds_obj)
+
+# Run DESeq2 for the contrast between Mutated and WildType TP53
+results <- results(dds_obj, format = "DataFrame", contrast = c("TP53_mutation", "Mutated", "WildType"))
+
+# Format results
+results <- data.frame(results)
+results[, "-log10(padj)"] <- -log10(results$padj)
+results[, "gene_name"] <- filtered_rna_genes$gene_name
+
+# Adjusted Volcano plot with specific color coding
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/volcano.jpg")
+ggplot(results, aes(x = log2FoldChange, y = -log10(padj))) +
+  # Points with customized significance coloring
+  geom_point(aes(color = ifelse(
+    padj < 0.05 & log2FoldChange > 1, "Upper Right", 
+    ifelse(padj < 0.05 & log2FoldChange < -1, "Upper Left", "Not Significant")
+  )), 
+  alpha = 0.8, size = 2) +
+  # Add horizontal and vertical threshold lines
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue", linewidth = 0.8) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue", linewidth = 0.8) +
+  # Labels for the plot
+  labs(
+    title = "TP53 Mutated vs WildType",
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value",
+    color = "Gene Significance"
+  ) +
+  # Define colors for upper right, upper left, and non-significant genes
+  scale_color_manual(
+    values = c("Upper Right" = "red", "Upper Left" = "blue", "Not Significant" = "gray")
+  ) +
+  # Minimal theme for cleaner presentation
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    axis.title = element_text(size = 12),
+    legend.position = "right"
+  )
+dev.off()
+
+```
+```{r}
+query <- GDCquery(project = "TCGA-GBM",
+                  data.category = "DNA Methylation",
+                  data.type = "Methylation Beta Value",
+                  platform = "Illumina Human Methylation 450",
+                  data.format = "Dataframe")
+GDCdownload(query)
+methylation450 <- GDCprepare(query)
+```
+
+```{r}
+methylation_clinical <- as.data.frame(methylation450@colData)
+column_mask <- ifelse(colnames(methylation_clinical) %in% c('treatments', 'primary_site', 'disease_type'), F, T)
+methylation_clinical <- methylation_clinical[,column_mask]
+
+betas <- as.data.frame(methylation450@assays@data@listData)
+cpg_sites <- as.data.frame(methylation450@rowRanges@elementMetadata)
+site_mask <- !grepl('-', cpg_sites$gene) & !grepl(';', cpg_sites$gene) & !is.na(cpg_sites$gene) & complete.cases(betas)
+betas <- betas[site_mask,]
+cpg_sites <- cpg_sites[site_mask,]
+
+```
+
+```{r}
+methylation_clinical$TP53_mutation <- ifelse(methylation_clinical$patient %in% tp53_mutated_barcodes, "Mutated", "WildType")
+methylation_clinical$TP53_mutation <- factor(methylation_clinical$TP53_mutation)
+
+methylation_clinical$TP53_mutation <- ifelse(methylation_clinical$TP53_mutation == "Mutated", TRUE, 
+                                     ifelse(methylation_clinical$TP53_mutation == "WildType", FALSE, NA))
+
+betas$X <- NULL
+
+colnames(betas) <- methylation_clinical$barcode
+betas <- betas[, methylation_clinical$barcode, drop = FALSE]
+
+mval <- t(apply(betas, 1, function(x) log2(x/(1-x))))
+
+design <- model.matrix(~ TP53_mutation, data = methylation_clinical)
+fit <- lmFit(mval, design)
+fit2 <- eBayes(fit)
+
+```
+
+```{r}
+dat <- data.frame(foldchange = fit[["coefficients"]][,2], logPvalue =  -log10(p.adjust(fit2[["p.value"]][,2],method='BY')), geneName = cpg_sites$gene)
+dat$threshold <- as.factor(abs(dat$foldchange) < 1)
+
+#Visualization
+cols <- c("TRUE" = "grey", "FALSE" = "blue")
+  
+
+jpeg("/home1/kyolsen/490_cluster/qbio490_fa24_final_gbm/outputs/methylation_volcano.jpg")
+ggplot(data = dat, aes(x = foldchange, y = logPvalue, color = threshold)) +
+  geom_point(alpha = 0.6, size = 0.8) +  # Adjust alpha and size for visibility
+  scale_colour_manual(values = cols) +
+  geom_vline(xintercept = 1, colour = "#990000", linetype = "dashed") + 
+  geom_vline(xintercept = -1, colour = "#990000", linetype = "dashed") +
+  geom_hline(yintercept = 2, colour = "#990000", linetype = "dashed") +
+  xlim(-3, 3) +  # Adjust the x-axis limits
+  ylim(0, 3) +  # Adjust the y-axis limits
+  xlab("Fold Change") +
+  ylab("-log10 p value") +
+  theme_bw() +
+  theme(legend.position = "none")
+dev.off()
+```
+
+
+
